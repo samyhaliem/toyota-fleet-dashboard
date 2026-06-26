@@ -1,134 +1,159 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import numpy as np
 
 st.set_page_config(
-    page_title="Toyota Fleet Dashboard",
+    page_title="Toyota Fleet Fraud Dashboard",
     layout="wide"
 )
 
 # =========================
-# DARK THEME
+# PREMIUM DARK THEME
 # =========================
 st.markdown("""
 <style>
 .stApp {
-    background-color: #0f172a;
+    background: linear-gradient(180deg, #081225 0%, #0f172a 100%);
     color: white;
 }
-h1,h2,h3,h4 {
+
+html, body, [class*="css"] {
+    font-size: 18px !important;
+}
+
+h1 {
+    font-size: 52px !important;
+    font-weight: 800 !important;
     color: white !important;
 }
+
+h2 {
+    font-size: 38px !important;
+    color: white !important;
+}
+
+h3 {
+    font-size: 28px !important;
+    color: white !important;
+}
+
 [data-testid="stMetricValue"] {
-    color: #00ff99;
+    font-size: 40px !important;
+    color: #00ff99 !important;
+    font-weight: bold !important;
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 22px !important;
+    color: #d1d5db !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================
-# HELPERS
-# =========================
-def safe_sum(df, col):
-    if col and col in df.columns:
-        return pd.to_numeric(
-            df[col],
-            errors="coerce"
-        ).fillna(0).sum()
-    return 0
-
-
-def safe_unique(df, col):
-    if col and col in df.columns:
-        return df[col].nunique()
-    return 0
-
-
-# =========================
-# UI HEADER
+# HEADER
 # =========================
 st.title("🚛 Toyota Fleet Fraud Dashboard")
-st.markdown("### Smart Driver Analytics & Fraud Detection")
-
-tab1, tab2 = st.tabs([
-    "📊 Executive Dashboard",
-    "🔍 Audit Investigation"
-])
+st.markdown("### Smart Driver Analytics & Fuel Fraud Detection")
 
 uploaded_file = st.file_uploader(
     "Upload Excel File",
     type=["xlsx"]
 )
 
+# =========================
+# HELPER FUNCTIONS
+# =========================
+def risk_label(score):
+    if score >= 75:
+        return "HIGH"
+    elif score >= 40:
+        return "MEDIUM"
+    return "LOW"
+
+
+def calculate_risk(row, driver_avg):
+    risk = 0
+
+    km_liter = row["عدد الكيلو في اللتر"]
+    cost_km = row["تكلفة الكيلو"]
+    driver = row["اسم السائق"]
+
+    if pd.notna(km_liter):
+        if km_liter < 3:
+            risk += 40
+        elif km_liter < 4:
+            risk += 20
+
+    if pd.notna(cost_km):
+        if cost_km > 2:
+            risk += 30
+        elif cost_km > 1.5:
+            risk += 15
+
+    if driver in driver_avg:
+        if km_liter < driver_avg[driver] * 0.8:
+            risk += 30
+
+    return min(risk, 100)
+
+# =========================
+# MAIN
+# =========================
 if uploaded_file:
-
-    # =========================
-    # LOAD DATA
-    # =========================
     df = pd.read_excel(uploaded_file)
-    df.columns = df.columns.astype(str)
-    df.columns = df.columns.str.strip()
 
-    # =========================
-    # AUTO DETECT COLUMNS
-    # =========================
-    driver_col = None
-    fuel_col = None
-    km_col = None
-    cost_col = None
+    # تنظيف
+    numeric_cols = [
+        "سولار",
+        "تكلفة الكيلو",
+        "عدد الكيلو في اللتر",
+        "إجمالي الكيلومتر اليومي"
+    ]
 
-    for col in df.columns:
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
 
-        if "السائق" in col:
-            driver_col = col
+    df = df.fillna(0)
 
-        if "سولار" in col or "بنزين" in col:
-            fuel_col = col
-
-        if "الكيلومتر" in col:
-            km_col = col
-
-        if "تكلفة الكيلو" in col:
-            cost_col = col
-
-    # =========================
-    # CLEAN NUMERIC
-    # =========================
-    if fuel_col:
-        df[fuel_col] = pd.to_numeric(
-            df[fuel_col],
-            errors="coerce"
-        ).fillna(0)
-
-    if km_col:
-        df[km_col] = pd.to_numeric(
-            df[km_col],
-            errors="coerce"
-        ).fillna(0)
-
-    if cost_col:
-        df[cost_col] = pd.to_numeric(
-            df[cost_col],
-            errors="coerce"
-        ).fillna(0)
-
-    # =========================
-    # KPI CALCULATIONS
-    # =========================
-    total_trips = len(df)
-    total_fuel = safe_sum(df, fuel_col)
-    total_km = safe_sum(df, km_col)
-    drivers = safe_unique(df, driver_col)
-
-    expected_fuel = total_km / 12 if total_km > 0 else 0
-    estimated_loss = max(0, total_fuel - expected_fuel) * 10
-
-    fraud_score = min(
-        100,
-        round((estimated_loss / 1000) * 20)
+    # Driver averages
+    driver_avg = (
+        df.groupby("اسم السائق")["عدد الكيلو في اللتر"]
+        .mean()
+        .to_dict()
     )
 
+    # Risk score
+    df["Risk Score"] = df.apply(
+        lambda row: calculate_risk(row, driver_avg),
+        axis=1
+    )
+
+    # KPIs
+    total_trips = len(df)
+    total_fuel = df["سولار"].sum()
+    avg_risk = round(df["Risk Score"].mean())
+    suspicious_count = len(df[df["Risk Score"] >= 70])
+
+    estimated_loss = suspicious_count * 250
+
+
     # =========================
-    # EXECUTIVE TAB
+    # TABS
+    # =========================
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Executive Dashboard",
+        "🔍 Audit Investigation",
+        "⚔️ Driver Battle"
+    ])
+
+    # =========================
+    # TAB 1: EXECUTIVE
     # =========================
     with tab1:
 
@@ -136,79 +161,205 @@ if uploaded_file:
 
         c1, c2, c3, c4 = st.columns(4)
 
-        c1.metric("Trips", total_trips)
-        c2.metric("Fuel", f"{round(total_fuel,1)} L")
-        c3.metric("Loss", f"EGP {round(estimated_loss,0)}")
-        c4.metric("Risk", f"{fraud_score}/100")
+        c1.metric("Total Trips", total_trips)
+        c2.metric("Total Fuel", f"{round(total_fuel,1)} L")
+        c3.metric("Estimated Loss", f"EGP {estimated_loss}")
+        c4.metric("Fraud Risk", f"{avg_risk}/100")
 
         st.markdown("---")
 
-        if driver_col and fuel_col:
+        # Driver fuel consumption chart
+        driver_summary = (
+            df.groupby("اسم السائق")["سولار"]
+            .sum()
+            .reset_index()
+        )
 
-            ranking = (
-                df.groupby(driver_col)[fuel_col]
-                .sum()
-                .reset_index()
-                .sort_values(
-                    by=fuel_col,
-                    ascending=False
-                )
-            )
+        fig = px.bar(
+            driver_summary,
+            x="اسم السائق",
+            y="سولار",
+            title="Fuel Consumption by Driver",
+            text_auto=True
+        )
 
-            fig = px.bar(
-                ranking,
-                x=driver_col,
-                y=fuel_col,
-                title="Driver Risk Ranking"
-            )
+        fig.update_layout(
+            plot_bgcolor="#0f172a",
+            paper_bgcolor="#0f172a",
+            font_color="white"
+        )
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
-            top_driver = ranking.iloc[0][driver_col]
+        st.warning(
+            f"""
+🚨 Executive Alert
 
-            st.error(
-                f"""
-🚨 EXECUTIVE ALERT
+Suspicious trips detected: {suspicious_count}
 
-High fuel anomaly detected.
-
-Highest Risk Driver: {top_driver}
-
-Immediate audit recommended.
+Average fleet risk: {avg_risk}/100
 """
-            )
+        )
 
     # =========================
-    # AUDIT TAB
+    # TAB 2: AUDIT
     # =========================
     with tab2:
 
         st.subheader("Audit Investigation")
 
-        if fuel_col:
-            threshold = df[fuel_col].mean() * 1.5
-            suspicious = df[df[fuel_col] > threshold]
+        drivers = ["All"] + list(
+            df["اسم السائق"].unique()
+        )
 
-            st.subheader("🚨 Suspicious Trips")
+        selected_driver = st.selectbox(
+            "Filter by Driver",
+            drivers
+        )
 
-            if len(suspicious) > 0:
-                st.dataframe(
-                    suspicious,
-                    use_container_width=True
-                )
-            else:
-                st.success(
-                    "No suspicious trips detected"
-                )
+        filtered_df = df.copy()
 
-        st.subheader("All Trip Records")
+        if selected_driver != "All":
+            filtered_df = filtered_df[
+                filtered_df["اسم السائق"]
+                == selected_driver
+            ]
+
+        risk_filter = st.slider(
+            "Minimum Risk Score",
+            0,
+            100,
+            50
+        )
+
+        suspicious_df = filtered_df[
+            filtered_df["Risk Score"] >= risk_filter
+        ]
+
+        st.subheader("Suspicious Trips")
+
         st.dataframe(
-            df,
+            suspicious_df,
             use_container_width=True
         )
 
+        st.markdown("---")
+
+        st.subheader("All Trips")
+
+        st.dataframe(
+            filtered_df,
+            use_container_width=True
+        )
+
+
+
+    # =========================
+    # TAB 3: DRIVER BATTLE
+    # =========================
+    with tab3:
+
+        st.subheader("⚔️ Driver Battle")
+
+        driver_stats = (
+            df.groupby("اسم السائق")
+            .agg({
+                "سولار": "mean",
+                "عدد الكيلو في اللتر": "mean",
+                "تكلفة الكيلو": "mean",
+                "Risk Score": "mean"
+            })
+            .reset_index()
+        )
+
+        if len(driver_stats) >= 2:
+
+            d1 = driver_stats.iloc[0]
+            d2 = driver_stats.iloc[1]
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown(
+                    f"""
+### 🚗 {d1['اسم السائق']}
+
+Fuel Avg: {round(d1['سولار'],2)} L
+
+KM/L: {round(d1['عدد الكيلو في اللتر'],2)}
+
+Cost/KM: {round(d1['تكلفة الكيلو'],2)}
+
+Risk Score: {round(d1['Risk Score'])}/100
+"""
+                )
+
+            with col2:
+                st.markdown(
+                    f"""
+### 🚗 {d2['اسم السائق']}
+
+Fuel Avg: {round(d2['سولار'],2)} L
+
+KM/L: {round(d2['عدد الكيلو في اللتر'],2)}
+
+Cost/KM: {round(d2['تكلفة الكيلو'],2)}
+
+Risk Score: {round(d2['Risk Score'])}/100
+"""
+                )
+
+            st.markdown("---")
+
+            # Winner Logic
+            efficiency_winner = (
+                d1["اسم السائق"]
+                if d1["عدد الكيلو في اللتر"]
+                > d2["عدد الكيلو في اللتر"]
+                else d2["اسم السائق"]
+            )
+
+            low_risk_winner = (
+                d1["اسم السائق"]
+                if d1["Risk Score"]
+                < d2["Risk Score"]
+                else d2["اسم السائق"]
+            )
+
+            high_risk_driver = (
+                d1["اسم السائق"]
+                if d1["Risk Score"]
+                > d2["Risk Score"]
+                else d2["اسم السائق"]
+            )
+
+            st.success(
+                f"🏆 Efficiency Winner: {efficiency_winner}"
+            )
+
+            st.info(
+                f"🛡 Lowest Risk Driver: {low_risk_winner}"
+            )
+
+            st.error(
+                f"🚨 Highest Fraud Probability: {high_risk_driver}"
+            )
+
+            st.markdown("---")
+
+            st.subheader("AI Recommendation")
+
+            st.warning(
+                f"""
+1. Audit fuel records for {high_risk_driver}
+2. Review fuel invoices
+3. Check idle engine time
+4. Inspect fuel leakage possibility
+"""
+            )
+
 else:
-    st.info("Upload Toyota Excel file")
+    st.info("Please upload Toyota Excel file")
