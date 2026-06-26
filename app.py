@@ -97,4 +97,31 @@ def safe_numeric(series: pd.Series) -> pd.Series:
 
 def safe_date(series: pd.Series) -> pd.Series:
     values = series.copy()
+
     if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values, errors="coerce")
+
+    if pd.api.types.is_numeric_dtype(values):
+        try:
+            return pd.to_datetime(values, errors="coerce", unit="D", origin="1899-12-30")
+        except Exception:
+            return pd.to_datetime(values, errors="coerce")
+
+    cleaned = (
+        values.astype(str)
+        .str.replace("\u200f", "", regex=False)
+        .str.replace("\u200e", "", regex=False)
+        .str.strip()
+    )
+
+    parsed = pd.to_datetime(cleaned, errors="coerce", dayfirst=True)
+    if parsed.notna().any():
+        return parsed
+
+    try:
+        return pd.to_datetime(cleaned, errors="coerce")
+    except Exception:
+        return pd.to_datetime(
+            pd.Series([pd.NaT] * len(values), index=values.index),
+            errors="coerce",
+        )
