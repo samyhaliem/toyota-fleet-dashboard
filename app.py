@@ -18,6 +18,11 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
+df.columns = df.columns.astype(str)
+df.columns = df.columns.str.strip()
+
+st.write("Columns Found:", list(df.columns))
+
     st.subheader("Raw Data")
     st.dataframe(df)
 
