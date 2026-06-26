@@ -1,3 +1,403 @@
+import io
+from datetime import datetime
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+
+st.set_page_config(
+    page_title="Fleet Control Dashboard",
+    page_icon="🚚",
+    layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+      .stApp {
+        background:
+          radial-gradient(circle at top left, rgba(37,99,235,0.12), transparent 28%),
+          radial-gradient(circle at top right, rgba(16,185,129,0.10), transparent 22%),
+          linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+      }
+      .hero {
+        padding: 1.1rem 1.2rem;
+        border-radius: 22px;
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 48%, #0f766e 100%);
+        color: white;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.22);
+        margin-bottom: 1rem;
+      }
+      .hero h1 {
+        margin: 0;
+        font-size: 2rem;
+        line-height: 1.2;
+      }
+      .hero p {
+        margin: 0.35rem 0 0;
+        opacity: 0.92;
+        font-size: 0.98rem;
+      }
+      div[data-testid="stMetric"] {
+        background: white;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 18px;
+        padding: 14px 16px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+      }
+      section[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      .insight-box {
+        border-radius: 18px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        padding: 0.95rem 1rem;
+        margin: 0.4rem 0 0.75rem;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def normalize_text(value: str) -> str:
+    return (
+        str(value)
+        .strip()
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace("\t", " ")
+    )
+
+
+def canonicalize(value: str) -> str:
+    return (
+        normalize_text(value)
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+        .replace(".", "")
+        .replace("/", "")
+    )
+
+
+def safe_numeric(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        series.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("%", "", regex=False)
+        .str.replace(" ", "", regex=False)
+        .str.strip(),
+        errors="coerce",
+    )
+
+
+def safe_date(series: pd.Series) -> pd.Series:
+    values = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values, errors="coerce")
+
+    if pd.api.types.is_numeric_dtype(values):
+        try:
+            return pd.to_datetime(values, errors="coerce", unit="D", origin="1899-12-30")
+        except Exception:
+            return pd.to_datetime(values, errors="coerce")
+
+    cleaned = (
+        values.astype(str)
+        .str.replace("\u200f", "", regex=False)
+        .str.replace("\u200e", "", regex=False)
+        .str.strip()
+    )
+    parsed = pd.to_datetime(cleaned, errors="coerce", dayfirst=True)
+    if parsed.notna().any():
+        return parsed
+
+    try:
+        return pd.to_datetime(cleaned, errors="coerce")
+    except Exception:
+        return pd.to_datetime(pd.Series([pd.NaT] * len(values), index=values.index), errors="coerce")
+
+
+def load_file(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        return pd.read_excel(uploaded_file)
+    raise ValueError("Upload CSV or Excel file.")
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    copy = df.copy()
+    copy.columns = [normalize_text(col) for col in copy.columns]
+    return copy
+
+
+def detect_column(columns: list[str], keyword_groups: list[list[str]]) -> str | None:
+    normalized = {col: canonicalize(col) for col in columns}
+    for group in keyword_groups:
+        keywords = [canonicalize(k) for k in group]
+        for col in columns:
+            value = normalized[col]
+            if any(keyword and keyword in value for keyword in keywords):
+                return col
+    return None
+
+
+def detect_schema(df: pd.DataFrame) -> dict[str, str | None]:
+    cols = list(df.columns)
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    return {
+        "date": detect_column(cols, [["التاريخ", "date", "day"], ["تاريخ"]]),
+        "driver": detect_column(cols, [["اسم السائق", "driver", "name"], ["السائق"]]),
+        "destination": detect_column(cols, [["الوجهه", "destination", "route"], ["وجهة", "trip"]]),
+        "daily_km": detect_column(numeric_cols, [["اجمالى الكيلومتر اليومى", "dailykm", "distance", "tripkm"]]),
+        "odo": detect_column(numeric_cols, [["الكيلو متر", "odometer", "odo"]]),
+        "total_amount": detect_column(numeric_cols, [["اجمالى المبلغ", "totalamount", "amount", "total"]]),
+        "fuel": detect_column(numeric_cols, [["سولار", "fuel", "diesel", "petrol", "gas"]]),
+        "garage_out": detect_column(numeric_cols, [["تحرك من الجراج", "garageout", "out"]]),
+        "garage_in": detect_column(numeric_cols, [["دخول الى الجراج", "garagein", "in"]]),
+        "cost_per_km": detect_column(numeric_cols, [["تكلفه الكيلو", "costperkm"]]),
+        "km_per_liter": detect_column(numeric_cols, [["عدد الكيلو فى اللتر", "kmperl", "kmpl"]]),
+        "notes": detect_column(cols, [["اخرى", "other", "note", "description"]]),
+    }
+
+
+def build_metrics(df: pd.DataFrame, schema: dict[str, str | None]) -> pd.DataFrame:
+    data = df.copy()
+
+    if schema["daily_km"]:
+        data["__daily_km"] = safe_numeric(data[schema["daily_km"]])
+    if schema["fuel"]:
+        data["__fuel"] = safe_numeric(data[schema["fuel"]])
+    if schema["total_amount"]:
+        data["__cost"] = safe_numeric(data[schema["total_amount"]])
+    if schema["garage_out"]:
+        data["__garage_out"] = safe_numeric(data[schema["garage_out"]])
+    if schema["garage_in"]:
+        data["__garage_in"] = safe_numeric(data[schema["garage_in"]])
+    if schema["odo"]:
+        data["__odo"] = safe_numeric(data[schema["odo"]])
+
+    if "__daily_km" in data.columns and "__fuel" in data.columns:
+        data["__km_per_liter"] = data["__daily_km"] / data["__fuel"].replace(0, pd.NA)
+    elif schema["km_per_liter"] and schema["km_per_liter"] in data.columns:
+        data["__km_per_liter"] = safe_numeric(data[schema["km_per_liter"]])
+
+    if "__daily_km" in data.columns and "__cost" in data.columns:
+        data["__cost_per_km"] = data["__cost"] / data["__daily_km"].replace(0, pd.NA)
+    elif schema["cost_per_km"] and schema["cost_per_km"] in data.columns:
+        data["__cost_per_km"] = safe_numeric(data[schema["cost_per_km"]])
+
+    if "__garage_out" in data.columns and "__garage_in" in data.columns:
+        data["__garage_gap"] = data["__garage_in"] - data["__garage_out"]
+
+    if schema["date"] and schema["date"] in data.columns:
+        data["__date"] = safe_date(data[schema["date"]])
+    else:
+        data["__date"] = pd.NaT
+
+    data["__month"] = data["__date"].dt.to_period("M").astype(str)
+    data["__day"] = data["__date"].dt.date.astype("string")
+    return data
+
+
+def median_value(series: pd.Series) -> float | None:
+    cleaned = pd.to_numeric(series, errors="coerce").dropna()
+    if cleaned.empty:
+        return None
+    return float(cleaned.median())
+
+
+def score_suspicious_rows(df: pd.DataFrame, schema: dict[str, str | None]) -> pd.DataFrame:
+    scored = df.copy()
+    scored["__risk_score"] = 0.0
+    scored["__risk_notes"] = ""
+
+    if "__km_per_liter" in scored.columns:
+        med = median_value(scored["__km_per_liter"])
+        if med:
+            mask = scored["__km_per_liter"] < med * 0.75
+            scored.loc[mask, "__risk_score"] += 40
+            scored.loc[mask, "__risk_notes"] += f"km/L below 75% of median ({med:.2f}); "
+
+    if "__cost_per_km" in scored.columns:
+        med = median_value(scored["__cost_per_km"])
+        if med:
+            mask = scored["__cost_per_km"] > med * 1.25
+            scored.loc[mask, "__risk_score"] += 30
+            scored.loc[mask, "__risk_notes"] += f"cost/km above 125% of median ({med:.2f}); "
+
+    if "__daily_km" in scored.columns:
+        top_cutoff = scored["__daily_km"].quantile(0.95)
+        mask = scored["__daily_km"] >= top_cutoff
+        scored.loc[mask, "__risk_score"] += 10
+        scored.loc[mask, "__risk_notes"] += f"top 5% daily KM (>= {top_cutoff:.0f}); "
+
+    if "__daily_km" in scored.columns:
+        zero_km_mask = scored["__daily_km"].fillna(0) <= 0
+        if "__fuel" in scored.columns:
+            zero_km_mask &= scored["__fuel"].fillna(0) > 0
+        if "__cost" in scored.columns:
+            zero_km_mask |= (scored["__daily_km"].fillna(0) <= 0) & (scored["__cost"].fillna(0) > 0)
+        scored.loc[zero_km_mask, "__risk_score"] += 25
+        scored.loc[zero_km_mask, "__risk_notes"] += "positive fuel/cost with zero KM; "
+
+    if schema["driver"] and schema["destination"] and "__date" in scored.columns:
+        dup_mask = scored.duplicated(subset=[c for c in [schema["driver"], schema["destination"], "__day"] if c in scored.columns], keep=False)
+        scored.loc[dup_mask, "__risk_score"] += 15
+        scored.loc[dup_mask, "__risk_notes"] += "duplicate driver-route-day pattern; "
+
+    if "__garage_gap" in scored.columns and "__daily_km" in scored.columns:
+        valid = scored["__garage_gap"].notna() & scored["__daily_km"].notna() & (scored["__daily_km"] > 0)
+        mask = valid & (scored["__garage_gap"].sub(scored["__daily_km"]).abs() > scored["__daily_km"] * 0.15 + 25)
+        scored.loc[mask, "__risk_score"] += 35
+        scored.loc[mask, "__risk_notes"] += "garage gap does not match daily KM; "
+
+    if schema["driver"] and schema["driver"] in scored.columns and "__km_per_liter" in scored.columns:
+        driver_median = scored.groupby(schema["driver"])["__km_per_liter"].transform("median")
+        mask = scored["__km_per_liter"] < driver_median * 0.8
+        scored.loc[mask, "__risk_score"] += 15
+        scored.loc[mask, "__risk_notes"] += "below driver median km/L; "
+
+    if schema["destination"] and schema["destination"] in scored.columns and "__cost_per_km" in scored.columns:
+        route_median = scored.groupby(schema["destination"])["__cost_per_km"].transform("median")
+        mask = scored["__cost_per_km"] > route_median * 1.2
+        scored.loc[mask, "__risk_score"] += 15
+        scored.loc[mask, "__risk_notes"] += "above route median cost/km; "
+
+    scored["__risk_probability"] = scored["__risk_score"].clip(upper=100)
+
+    return scored.sort_values("__risk_score", ascending=False)
+
+
+def safe_label(value: float | int | None, suffix: str = "") -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:,.2f}{suffix}"
+    return f"{value:,}{suffix}"
+
+
+def compare_drivers(filtered: pd.DataFrame, schema: dict[str, str | None]) -> pd.DataFrame | None:
+    if not schema["driver"] or schema["driver"] not in filtered.columns:
+        return None
+    if "__daily_km" not in filtered.columns and "__fuel" not in filtered.columns and "__cost" not in filtered.columns:
+        return None
+
+    driver_df = filtered.groupby(schema["driver"], dropna=False).size().reset_index(name="trips")
+    agg_map = {}
+    if "__daily_km" in filtered.columns:
+        agg_map["distance"] = ("__daily_km", "sum")
+    if "__fuel" in filtered.columns:
+        agg_map["fuel"] = ("__fuel", "sum")
+    if "__cost" in filtered.columns:
+        agg_map["cost"] = ("__cost", "sum")
+    if "__km_per_liter" in filtered.columns:
+        agg_map["median_kmpl"] = ("__km_per_liter", "median")
+    if "__cost_per_km" in filtered.columns:
+        agg_map["median_cost_per_km"] = ("__cost_per_km", "median")
+
+    if agg_map:
+        metric_df = filtered.groupby(schema["driver"], dropna=False).agg(**agg_map).reset_index()
+        driver_df = driver_df.merge(metric_df, on=schema["driver"], how="left")
+
+    if "distance" in driver_df.columns and "fuel" in driver_df.columns:
+        driver_df["avg_kmpl"] = driver_df["distance"] / driver_df["fuel"].replace(0, pd.NA)
+    elif "median_kmpl" in driver_df.columns:
+        driver_df["avg_kmpl"] = driver_df["median_kmpl"]
+    else:
+        driver_df["avg_kmpl"] = pd.NA
+
+    if "distance" in driver_df.columns and "cost" in driver_df.columns:
+        driver_df["cost_per_km"] = driver_df["cost"] / driver_df["distance"].replace(0, pd.NA)
+    elif "median_cost_per_km" in driver_df.columns:
+        driver_df["cost_per_km"] = driver_df["median_cost_per_km"]
+    else:
+        driver_df["cost_per_km"] = pd.NA
+
+    driver_df["risk_score"] = (
+        driver_df["avg_kmpl"].rank(pct=True, ascending=True).fillna(0) * 40
+        + driver_df["cost_per_km"].rank(pct=True, ascending=False).fillna(0) * 40
+        + driver_df["trips"].rank(pct=True, ascending=False).fillna(0) * 20
+    ).fillna(0)
+
+    return driver_df.sort_values("risk_score", ascending=False)
+
+
+def comparison_summary(driver_df: pd.DataFrame, driver_a: str, driver_b: str, driver_col: str) -> pd.DataFrame:
+    rows = []
+    subset = driver_df[driver_df[driver_col].astype(str).isin([driver_a, driver_b])].copy()
+    for _, row in subset.iterrows():
+        rows.append(
+            {
+                "driver": row[driver_col],
+                "trips": row.get("trips"),
+                "distance": row.get("distance"),
+                "fuel": row.get("fuel"),
+                "cost": row.get("cost"),
+                "avg_kmpl": row.get("avg_kmpl"),
+                "cost_per_km": row.get("cost_per_km"),
+                "risk_score": row.get("risk_score"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+st.markdown(
+    """
+    <div class="hero">
+      <h1>Fleet Control Dashboard</h1>
+      <p>لوحة تحكم ديناميكية لمراقبة السائقين، مقارنة الرحلات، وكشف الشذوذ بشكل واضح للإدارة</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+uploaded_file = st.file_uploader("Upload CSV / Excel", type=["csv", "xlsx", "xls"])
+
+if not uploaded_file:
+    st.info("ارفع ملف Excel أو CSV علشان نبدأ.")
+    st.stop()
+
+try:
+    raw_df = load_file(uploaded_file)
+except Exception as exc:
+    st.error(f"Failed to read file: {exc}")
+    st.stop()
+
+raw_df = normalize_columns(raw_df)
+schema = detect_schema(raw_df)
+df = build_metrics(raw_df, schema)
+scored_df = score_suspicious_rows(df, schema)
+
+with st.expander("Detected schema", expanded=False):
+    st.json(schema)
+
+with st.expander("Preview data", expanded=False):
+    st.write("Columns:", list(raw_df.columns))
+    st.dataframe(raw_df.head(20), use_container_width=True)
+
+numeric_cols = df.select_dtypes(include="number").columns.tolist()
+text_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+
+top = st.columns(5)
+with top[0]:
+    st.metric("Rows", f"{len(df):,}")
+with top[1]:
+    st.metric("Columns", f"{len(df.columns):,}")
+with top[2]:
+    st.metric("Drivers", f"{df[schema['driver']].nunique():,}" if schema["driver"] else "N/A")
+with top[3]:
+    st.metric("Routes", f"{df[schema['destination']].nunique():,}" if schema["destination"] else "N/A")
+with top[4]:
+    flagged = int((scored_df["__risk_score"] >= 15).sum())
+    st.metric("Flagged trips", f"{flagged:,}")
+
 filters = st.columns(3)
 filtered = df.copy()
 
@@ -248,3 +648,32 @@ with tabs[3]:
 
         note_view = suspicious[[c for c in [schema["driver"], schema["destination"], "__risk_score", "__risk_notes"] if c and c in suspicious.columns]].copy()
         if not note_view.empty:
+            st.markdown("### Why these trips were flagged")
+            st.dataframe(note_view, use_container_width=True)
+
+        csv_buffer = io.StringIO()
+        suspicious.to_csv(csv_buffer, index=False)
+        st.download_button(
+            "Download suspicious trips",
+            csv_buffer.getvalue(),
+            file_name="suspicious_trips.csv",
+            mime="text/csv",
+        )
+    else:
+        st.success("No suspicious trips detected with the current rules.")
+
+with tabs[4]:
+    st.subheader("Data Explorer")
+    st.write("Detected columns:", list(raw_df.columns))
+    st.dataframe(filtered, use_container_width=True)
+
+    csv_buffer = io.StringIO()
+    filtered.to_csv(csv_buffer, index=False)
+    st.download_button(
+        "Download filtered data as CSV",
+        csv_buffer.getvalue(),
+        file_name=f"filtered_{uploaded_file.name.rsplit('.', 1)[0]}.csv",
+        mime="text/csv",
+    )
+
+st.caption(f"Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
