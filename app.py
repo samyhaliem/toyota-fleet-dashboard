@@ -30,9 +30,20 @@ st.write("Columns Found:", list(df.columns))
 
     col1.metric("Total Trips", len(df))
 
-    if "بنزين / سولار" in df.columns:
-        total_fuel = df["بنزين / سولار"].sum()
-        col2.metric("Total Fuel", round(total_fuel, 2))
+    fuel_col = None
+
+for col in df.columns:
+    if "سولار" in col or "بنزين" in col:
+        fuel_col = col
+        break
+
+if fuel_col:
+    total_fuel = pd.to_numeric(
+        df[fuel_col],
+        errors="coerce"
+    ).fillna(0).sum()
+
+    col2.metric("Total Fuel", round(total_fuel, 2))
 
     if "اسم السائق" in df.columns:
         total_drivers = df["اسم السائق"].nunique()
