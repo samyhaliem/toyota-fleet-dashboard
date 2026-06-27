@@ -387,13 +387,6 @@ schema = detect_schema(raw_df)
 df = build_metrics(raw_df, schema)
 scored_df = score_suspicious_rows(df, schema)
 
-with st.expander("الهيكل المكتشف", expanded=False):
-    st.json(schema)
-
-with st.expander("معاينة البيانات", expanded=False):
-    st.write("الأعمدة:", list(raw_df.columns))
-    st.dataframe(raw_df.head(20), use_container_width=True)
-
 top = st.columns(5)
 with top[0]:
     st.metric("عدد الصفوف", f"{len(df):,}")
@@ -794,5 +787,11 @@ with tabs[4]:
         file_name=f"filtered_{uploaded_file.name.rsplit('.', 1)[0]}.csv",
         mime="text/csv",
     )
+
+    with st.expander("تفاصيل تقنية", expanded=False):
+        st.write("الهيكل المكتشف:")
+        st.json(schema)
+        st.write("معاينة من أول البيانات:")
+        st.dataframe(raw_df.head(20), use_container_width=True)
 
 st.caption(f"تم التوليد في {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
