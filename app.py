@@ -7,7 +7,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="لوحة متابعة الأسطول",
+    page_title="لوحة تحليل التشغيل والتكلفة",
     page_icon="🚚",
     layout="wide",
 )
@@ -335,7 +335,7 @@ def comparison_summary(driver_df: pd.DataFrame, driver_a: str, driver_b: str, dr
                 "إجمالي التكلفة": row.get("cost"),
                 "متوسط كم/لتر": row.get("avg_kmpl"),
                 "تكلفة/كم": row.get("cost_per_km"),
-                "درجة المخاطرة": row.get("risk_score"),
+                "درجة التنبيه": row.get("risk_score"),
             }
         )
     return pd.DataFrame(rows)
@@ -363,8 +363,8 @@ def build_driver_compare_metrics(filtered: pd.DataFrame, schema: dict[str, str |
 st.markdown(
     """
     <div class="hero">
-      <h1>لوحة متابعة الأسطول</h1>
-      <p>متابعة السائقين، مقارنة الرحلات، وكشف الشذوذ بشكل واضح وسهل للإدارة</p>
+      <h1>لوحة تحليل التشغيل والتكلفة</h1>
+      <p>متابعة السائقين، مقارنة الرحلات، وتوضيح أثر الأداء على التكلفة بشكل واضح للإدارة</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -405,7 +405,7 @@ with top[3]:
     st.metric("الوجهات", f"{df[schema['destination']].nunique():,}" if schema["destination"] else "N/A")
 with top[4]:
     flagged = int((scored_df["__risk_score"] >= 15).sum())
-    st.metric("الرحلات المشبوهة", f"{flagged:,}")
+    st.metric("الرحلات تحت التحليل", f"{flagged:,}")
 
 filters = st.columns(3)
 filtered = df.copy()
@@ -437,7 +437,7 @@ if schema["date"] and schema["date"] in filtered.columns:
             mask = safe_date(filtered[schema["date"]]).between(pd.Timestamp(start), pd.Timestamp(end))
             filtered = filtered[mask]
 
-tabs = st.tabs(["الملخص التنفيذي", "تحليل السائقين", "تحليل الوجهات", "الرحلات المشبوهة", "استكشاف البيانات"])
+tabs = st.tabs(["الملخص التنفيذي", "مقارنة الأداء", "تحليل الوجهات", "الرحلات التي تحتاج متابعة", "استكشاف البيانات"])
 
 with tabs[0]:
     st.subheader("الملخص التنفيذي")
@@ -456,13 +456,38 @@ with tabs[0]:
     c5.metric("تكلفة / كم", f"{avg_cost_per_km:.2f}", f"{avg_kmpl:.2f} كم/لتر")
 
     chart_left, chart_right = st.columns(2)
-    if "__km_per_liter" in filtered.columns:
+    if schema["driver"] and "__cost" in filtered.columns:
         with chart_left:
-            fig = px.histogram(
-                filtered.dropna(subset=["__km_per_liter"]),
-                x="__km_per_liter",
-                nbins=18,
-                title="توزيع كفاءة الوقود",
+            cost_by_driver = (
+                filtered.groupby(schema["driver"], dropna=False)
+                .agg(إجمالي_التكلفة=("__cost", "sum"))
+                .reset_index()
+                .sort_values("إجمالي_التكلفة", ascending=False)
+                .head(10)
+            )
+            fig = px.bar(
+                cost_by_driver,
+                x="إجمالي_التكلفة",
+                y=schema["driver"],
+                orientation="h",
+                title="أكثر السائقين تأثيرًا على التكلفة",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    elif schema["destination"] and "__cost" in filtered.columns:
+        with chart_left:
+            cost_by_route = (
+                filtered.groupby(schema["destination"], dropna=False)
+                .agg(إجمالي_التكلفة=("__cost", "sum"))
+                .reset_index()
+                .sort_values("إجمالي_التكلفة", ascending=False)
+                .head(10)
+            )
+            fig = px.bar(
+                cost_by_route,
+                x="إجمالي_التكلفة",
+                y=schema["destination"],
+                orientation="h",
+                title="أكثر الوجهات تأثيرًا على التكلفة",
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -481,7 +506,7 @@ with tabs[0]:
                 x="__month",
                 y=[c for c in ["km", "fuel", "cost"] if c in monthly.columns],
                 markers=True,
-                title="الاتجاه الشهري",
+                title="الاتجاه الشهري للتكلفة والكميات",
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -498,14 +523,14 @@ with tabs[0]:
                 st.metric("السائق الأول", first["السائق"])
                 st.metric("الرحلات", safe_label(first["عدد الرحلات"]))
                 st.metric("متوسط كم/لتر", safe_label(first["متوسط كم/لتر"], " كم/لتر"))
-                st.metric("درجة المخاطرة", safe_label(first["درجة المخاطرة"]))
+                st.metric("درجة التنبيه", safe_label(first["درجة التنبيه"]))
 
             if second is not None:
                 with cols[1]:
                     st.metric("السائق الثاني", second["السائق"])
                     st.metric("الرحلات", safe_label(second["عدد الرحلات"]))
                     st.metric("متوسط كم/لتر", safe_label(second["متوسط كم/لتر"], " كم/لتر"))
-                    st.metric("درجة المخاطرة", safe_label(second["درجة المخاطرة"]))
+                    st.metric("درجة التنبيه", safe_label(second["درجة التنبيه"]))
 
             compare_chart = compare_short.melt(id_vars="السائق", var_name="المؤشر", value_name="القيمة")
             fig = px.bar(
@@ -523,11 +548,12 @@ with tabs[0]:
                 second = compare_short.iloc[1]
                 kmpl_first = pd.to_numeric(pd.Series([first["متوسط كم/لتر"]]), errors="coerce").iloc[0]
                 kmpl_second = pd.to_numeric(pd.Series([second["متوسط كم/لتر"]]), errors="coerce").iloc[0]
-                risk_first = pd.to_numeric(pd.Series([first["درجة المخاطرة"]]), errors="coerce").iloc[0]
-                risk_second = pd.to_numeric(pd.Series([second["درجة المخاطرة"]]), errors="coerce").iloc[0]
+                risk_first = pd.to_numeric(pd.Series([first["درجة التنبيه"]]), errors="coerce").iloc[0]
+                risk_second = pd.to_numeric(pd.Series([second["درجة التنبيه"]]), errors="coerce").iloc[0]
                 better_driver = first["السائق"] if pd.notna(kmpl_first) and pd.notna(kmpl_second) and kmpl_first >= kmpl_second else second["السائق"]
                 watch_driver = first["السائق"] if pd.notna(risk_first) and pd.notna(risk_second) and risk_first >= risk_second else second["السائق"]
-                st.info(f"السائق الأفضل في كفاءة الوقود حاليًا: **{better_driver}**. والسائق الذي يحتاج مراجعة أكبر: **{watch_driver}**.")
+                st.info(f"السائق الأفضل في كفاءة الوقود حاليًا: **{better_driver}**. والسائق الذي يحتاج متابعة أكبر: **{watch_driver}**.")
+                st.caption("هذه الخلاصة تساعد الإدارة على اتخاذ قرار سريع بدون قراءة الجدول كاملًا.")
 
     insight = []
     if schema["driver"] and "__km_per_liter" in scored_df.columns:
@@ -537,12 +563,17 @@ with tabs[0]:
     if not scored_df.empty:
         top_risk = scored_df.iloc[0]
         insight.append(
-            f"أعلى رحلة من حيث الاشتباه سجلت درجة {top_risk['__risk_score']:.0f} واحتمال خطر {top_risk['__risk_probability']:.0f}%."
+            f"أعلى رحلة من حيث التنبيه سجلت درجة {top_risk['__risk_score']:.0f} واحتمال {top_risk['__risk_probability']:.0f}%."
         )
     if schema["driver"] and schema["destination"] and "__risk_score" in scored_df.columns:
         mean_risk = scored_df.groupby(schema["driver"])["__risk_score"].mean().sort_values(ascending=False)
         if not mean_risk.empty:
-            insight.append(f"السائق الأكثر عرضة للتنبيهات في المتوسط: {mean_risk.index[0]}.")
+            insight.append(f"السائق الأكثر ظهورًا في التنبيهات في المتوسط: {mean_risk.index[0]}.")
+
+    if insight:
+        st.markdown("### ملخص إداري")
+        for line in insight[:3]:
+            st.write(f"- {line}")
 
     st.markdown('<div class="insight-box"><strong>ملاحظات سريعة</strong></div>', unsafe_allow_html=True)
     if insight:
@@ -552,14 +583,14 @@ with tabs[0]:
         st.write("- ارفع ملفًا يحتوي على بيانات أكثر لعرض ملاحظات تشغيلية أوضح.")
 
 with tabs[1]:
-    st.subheader("تحليل السائقين")
+    st.subheader("مقارنة الأداء")
     driver_df = compare_drivers(filtered, schema)
     if driver_df is not None and schema["driver"]:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("عدد السائقين", f"{driver_df.shape[0]:,}")
         c2.metric("أفضل كفاءة", safe_label(driver_df["avg_kmpl"].max(), " كم/لتر"))
         c3.metric("أقل كفاءة", safe_label(driver_df["avg_kmpl"].min(), " كم/لتر"))
-        c4.metric("أعلى مخاطرة", safe_label(driver_df["risk_score"].max()))
+        c4.metric("أعلى تنبيه", safe_label(driver_df["risk_score"].max()))
 
         cols = [schema["driver"], "trips"]
         for extra in ["distance", "fuel", "cost", "avg_kmpl", "cost_per_km", "risk_score"]:
@@ -572,7 +603,7 @@ with tabs[1]:
             x=schema["driver"],
             y="risk_score",
             color="avg_kmpl" if "avg_kmpl" in driver_df.columns else None,
-            title="ترتيب السائقين حسب المخاطر",
+            title="ترتيب السائقين حسب التنبيهات",
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -596,8 +627,8 @@ with tabs[1]:
                 diff_risk = None
                 if pd.notna(first["متوسط كم/لتر"]) and pd.notna(second["متوسط كم/لتر"]):
                     diff_kmpl = float(first["متوسط كم/لتر"]) - float(second["متوسط كم/لتر"])
-                if pd.notna(first["درجة المخاطرة"]) and pd.notna(second["درجة المخاطرة"]):
-                    diff_risk = float(first["درجة المخاطرة"]) - float(second["درجة المخاطرة"])
+                if pd.notna(first["درجة التنبيه"]) and pd.notna(second["درجة التنبيه"]):
+                    diff_risk = float(first["درجة التنبيه"]) - float(second["درجة التنبيه"])
 
                 st.markdown("### الخلاصة السريعة")
                 summary_lines = []
@@ -606,7 +637,7 @@ with tabs[1]:
                     summary_lines.append(f"السائق الأفضل في كفاءة الوقود هو: {better_driver}.")
                 if diff_risk is not None:
                     risk_driver = first["السائق"] if diff_risk > 0 else second["السائق"]
-                    summary_lines.append(f"السائق الأعلى في المخاطرة هو: {risk_driver}.")
+                    summary_lines.append(f"السائق الأكثر ظهورًا في التنبيهات هو: {risk_driver}.")
                 if summary_lines:
                     for line in summary_lines:
                         st.write(f"- {line}")
@@ -680,12 +711,12 @@ with tabs[2]:
         st.info("لم يتم اكتشاف عمود الوجهة.")
 
 with tabs[3]:
-    st.subheader("الرحلات المشبوهة")
+    st.subheader("الرحلات التي تحتاج متابعة")
     suspicious = scored_df[scored_df["__risk_score"] >= 15].copy().head(50)
 
     a1, a2, a3, a4 = st.columns(4)
-    a1.metric("الرحلات المشبوهة", f"{len(suspicious):,}")
-    a2.metric("أعلى خطر", f"{suspicious['__risk_score'].max():.0f}" if not suspicious.empty else "0")
+    a1.metric("الرحلات التي تحتاج متابعة", f"{len(suspicious):,}")
+    a2.metric("أعلى تنبيه", f"{suspicious['__risk_score'].max():.0f}" if not suspicious.empty else "0")
     a3.metric(
         "وسيط كم/لتر",
         f"{scored_df['__km_per_liter'].median():.2f}" if "__km_per_liter" in scored_df.columns and not scored_df["__km_per_liter"].dropna().empty else "N/A",
@@ -736,19 +767,19 @@ with tabs[3]:
             [c for c in [schema["driver"], schema["destination"], "__risk_score", "__risk_notes"] if c and c in suspicious.columns]
         ].copy()
         if not note_view.empty:
-            st.markdown("### لماذا تم وضع هذه الرحلات تحت المراجعة")
+            st.markdown("### لماذا ظهرت هذه الرحلات في قائمة التحليل")
             st.dataframe(note_view, use_container_width=True)
 
         csv_buffer = io.StringIO()
         suspicious.to_csv(csv_buffer, index=False)
         st.download_button(
-            "تحميل الرحلات المشبوهة",
+            "تحميل الرحلات التي تحتاج متابعة",
             csv_buffer.getvalue(),
             file_name="suspicious_trips.csv",
             mime="text/csv",
         )
     else:
-        st.success("لم يتم اكتشاف رحلات مشبوهة بالقواعد الحالية.")
+        st.success("لم تظهر رحلات تحتاج متابعة بالقواعد الحالية.")
 
 with tabs[4]:
     st.subheader("استكشاف البيانات")
